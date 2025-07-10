@@ -1,4 +1,155 @@
 <!DOCTYPE html>
+<html>
+<head>
+    <title>Smart Trash Detector - Webcam</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        #webcam {
+            border: 2px solid #333;
+            border-radius: 4px;
+        }
+        #capture-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 0;
+        }
+        #capture-btn:hover {
+            background-color: #45a049;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            min-height: 100px;
+        }
+        .prediction {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .confidence {
+            font-size: 16px;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <h1>Smart Trash Detector</h1>
+    <p>Point your webcam at an object and click the button to detect if it's trash</p>
+    
+    <!-- Webcam Feed -->
+    <video id="webcam" width="640" height="480" autoplay playsinline></video>
+    <br>
+    <button id="capture-btn">Capture & Detect</button>
+    
+    <!-- Results Container -->
+    <div id="results">
+        <p>Results will appear here...</p>
+    </div>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const captureBtn = document.getElementById('capture-btn');
+        const resultsDiv = document.getElementById('results');
+
+        // Access webcam
+        async function initWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    } 
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                console.error("Webcam error: ", err);
+                resultsDiv.innerHTML = `
+                    <p style="color: red;">Error accessing webcam. Please check permissions and make sure your camera is connected.</p>
+                    <p>Error details: ${err.message}</p>
+                `;
+            }
+        }
+
+        // Capture frame and send to server
+        captureBtn.addEventListener('click', async () => {
+            // Disable button during processing
+            captureBtn.disabled = true;
+            captureBtn.textContent = "Processing...";
+            
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                
+                // Draw current video frame to canvas
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                // Show loading message
+                resultsDiv.innerHTML = '<p>Detecting trash... Please wait.</p>';
+                
+                // Convert canvas image to blob (for efficient upload)
+                const blob = await new Promise((resolve) => {
+                    canvas.toBlob(resolve, 'image/jpeg', 0.9);
+                });
+
+                const formData = new FormData();
+                formData.append('image', blob, 'frame.jpg');
+
+                // Send to prediction API
+                const response = await fetch('http://localhost:3000/predict', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server returned ${response.status}`);
+                }
+
+                const data = await response.json();
+                displayResults(data);
+            } catch (err) {
+                console.error("Upload error: ", err);
+                resultsDiv.innerHTML = `
+                    <p style="color: red;">Prediction failed. Please try again.</p>
+                    <p>Error details: ${err.message}</p>
+                    ${err.message.includes('Failed to fetch') ? 
+                    '<p>Make sure the server is running on port 3000.</p>' : ''}
+                `;
+            } finally {
+                // Re-enable button
+                captureBtn.disabled = false;
+                captureBtn.textContent = "Capture & Detect";
+            }
+        });
+
+        // Display prediction results
+        function displayResults(data) {
+            resultsDiv.innerHTML = `
+                <div class="prediction">Prediction: ${data.class || 'Unknown'}</div>
+                <div class="confidence">Confidence: ${data.confidence ? Math.round(data.confidence * 100) : 'N/A'}%</div>
+                ${data.image_path ? `<img src="${data.image_path}" width="300" style="margin-top: 15px;">` : ''}
+            `;
+        }
+
+        // Initialize webcam on load
+        window.onload = initWebcam;
+    </script>
+</body>
+</html><!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
