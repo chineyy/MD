@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Live Mood Classifier</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
+<style>
+body { font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; background: #f0f4f8; margin: 0; }
+.card { background: white; border-radius: 16px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); padding: 20px; width: 90%; max-width: 400px; text-align: center; }
+button { background: linear-gradient(to right, #4facfe, #00f2fe); border: none; color: white; padding: 12px 20px; margin: 10px; border-radius: 8px; font-size: 16px; cursor: pointer; transition: transform 0.2s; }
+button:hover { transform: scale(1.05); }
+#result { margin-top: 20px; font-size: 18px; color: #333; min-height: 60px; }
+video, img { width: 100%; border-radius: 12px; margin-top: 15px; }
+.shimmer { height: 20px; background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px; margin: 8px 0; }
+.confidence-bar { height: 20px; background: #e0e0e0; border-radius: 10px; margin: 5px 0; overflow: hidden; }
+.confidence-fill { height: 100%; background: linear-gradient(to right, #4facfe, #00f2fe); border-radius: 10px; }
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+</style>
+</head>
+<body>
+<div class="card">
+<h2>Live Mood Classifier</h2>
+<button id="upload-btn">Upload Image</button>
+<button id="webcam-btn">Use Webcam Live</button>
+<input type="file" id="file-input" accept="image/*" style="display:none;" />
+<img id="image-preview" style="display:none;" />
+<video id="webcam" autoplay playsinline style="display:none;"></video>
+<div id="result">Results will appear here</div>
+</div>
+<script>
+let model, webcamStream, animationId;
+const uploadBtn = document.getElementById('upload-btn');
+const webcamBtn = document.getElementById('webcam-btn');
+const fileInput = document.getElementById('file-input');
+const imagePreview = document.getElementById('image-preview');
+const webcam = document.getElementById('webcam');
+const resultDiv = document.getElementById('result');
+
+// Model loading with error handling
+async function loadModel() {
+    try {
+        resultDiv.innerHTML = 'Loading model...';
+        model = await tmImage.load('./model.json', './metadata.json');
+        resultDiv.innerHTML = 'Model loaded successfully. Click buttons to start.';
+    } catch (error) {
+        resultDiv.innerHTML = 'Error loading model: ' + error.message;
+        console.error(error);
+    }
+}
+
+uploadBtn.onclick = () => { stopWebcam(); fileInput.click(); };
+fileInput.onchange = () => { 
+    const file = fileInput.files[0]; 
+    if (file) { 
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            imagePreview.src = e.target.result;
+            imagePreview.style.display = 'block'; 
+            webcam.style.display = 'none'; 
+            predictImage();
+        };
+        reader.readAsDataURL(file);
+    } 
+};
+
+webcamBtn.onclick = async () => { 
+    try {
+        stopWebcam(); 
+        imagePreview.style.display = 'none'; 
+        webcam.style.display = 'block'; 
+        webcamStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                facingMode: "user",
+                width: { ideal: 640 },
+                height: { ideal: 480 }
+            } 
+        }); 
+        webcam.srcObject = webcamStream;
+        webcam.style.transform = "scaleX(-1)";
+        // Wait for video to be ready
+        webcam.onloadedmetadata = () => {
+            startLivePrediction();
+        };
+    } catch (error) {
+        resultDiv.innerHTML = 'Error accessing webcam: ' + error.message;
+        console.error(error);
+    }
+};
+
+async function predictImage() { 
+    resultDiv.innerHTML = '<div class="shimmer"></div><div class="shimmer"></div>'; 
+    try {
+        // Ensure image is fully loaded
+        if (!imagePreview.complete || imagePreview.naturalWidth === 0) {
+            imagePreview.onload = async () => {
+                await predictLoadedImage();
+            };
+        } else {
+            await predictLoadedImage();
+        }
+    } catch (error) {
+        resultDiv.innerHTML = 'Error predicting image: ' + error.message;
+        console.error(error);
+    }
+}
+
+async function predictLoadedImage() {
+    // Create a canvas to process the image
+    const canvas = document.createElement('canvas');
+    canvas.width = 224; // Common size for image models
+    canvas.height = 224;
+    const ctx = canvas.getContext('2d');
+    
+    // Draw image centered and scaled to fit
+    const aspectRatio = imagePreview.naturalWidth / imagePreview.naturalHeight;
+    let drawWidth, drawHeight, offsetX = 0, offsetY = 0;
+    
+    if (aspectRatio > 1) {
+        drawWidth = canvas.width;
+        drawHeight = canvas.height / aspectRatio;
+        offsetY = (canvas.height - drawHeight) / 2;
+    } else {
+        drawHeight = canvas.height;
+        drawWidth = canvas.width * aspectRatio;
+        offsetX = (canvas.width - drawWidth) / 2;
+    }
+    
+    ctx.drawImage(imagePreview, offsetX, offsetY, drawWidth, drawHeight);
+    
+    const predictions = await model.predict(canvas);
+    displayPrediction(predictions);
+}
+
+async function startLivePrediction() { 
+    function loop() { 
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = 224;
+        tempCanvas.height = 224;
+        const ctx = tempCanvas.getContext('2d');
+        
+        // Calculate aspect ratio and positioning
+        const videoAspect = webcam.videoWidth / webcam.videoHeight;
+        let drawWidth, drawHeight, offsetX = 0, offsetY = 0;
+        
+        if (videoAspect > 1) {
+            drawWidth = tempCanvas.width;
+            drawHeight = tempCanvas.height / videoAspect;
+            offsetY = (tempCanvas.height - drawHeight) / 2;
+        } else {
+            drawHeight = tempCanvas.height;
+            drawWidth = tempCanvas.width * videoAspect;
+            offsetX = (tempCanvas.width - drawWidth) / 2;
+        }
+        
+        // Mirror and draw
+        ctx.translate(tempCanvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(webcam, offsetX, offsetY, drawWidth, drawHeight);
+        
+        model.predict(tempCanvas).then(predictions => { 
+            displayPrediction(predictions); 
+        }).catch(error => {
+            console.error('Prediction error:', error);
+        }); 
+        
+        animationId = requestAnimationFrame(loop); 
+    } 
+    loop(); 
+}
+
+function displayPrediction(predictions) { 
+    predictions.sort((a, b) => b.probability - a.probability); 
+    
+    let html = '';
+    predictions.forEach(p => {
+        html += `
+            <div>
+                <strong>${p.className}</strong>
+                <div class="confidence-bar">
+                    <div class="confidence-fill" style="width: ${p.probability * 100}%"></div>
+                </div>
+                ${(p.probability * 100).toFixed(1)}%
+            </div>
+        `;
+    });
+    
+    resultDiv.innerHTML = html;
+}
+
+function stopWebcam() { 
+    if (webcamStream) { 
+        webcamStream.getTracks().forEach(track => track.stop()); 
+        webcamStream = null; 
+    } 
+    if (animationId) { 
+        cancelAnimationFrame(animationId); 
+        animationId = null; 
+    } 
+    webcam.style.display = 'none'; 
+    resultDiv.textContent = 'Results will appear here'; 
+}
+
+// Add error handling for model loading
+window.addEventListener('load', () => {
+    loadModel().catch(error => {
+        resultDiv.innerHTML = 'Failed to load model: ' + error.message;
+        console.error(error);
+    });
+});
+</script>
+</body>
+</html>
